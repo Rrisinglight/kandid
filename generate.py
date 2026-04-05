@@ -38,11 +38,11 @@ CONTROL_POINTS: dict[str, tuple[float, float]] = {
 VH_HEIGHTS = np.array([3.0, 5.0, 10.0, 15.0, 20.0])
 VH_WIND_MIDS = np.array([1.5, 2.55, 3.25, 4.0, 6.1])
 VH_SIGMA_CM = np.array([
-    [ 5.0,  6.0, 12.0, 18.0, 35.0],
-    [ 5.5,  8.0, 13.0, 20.0, 37.0],
+    [ 4.0,  5.5, 11.0, 17.0, 34.0],
+    [ 5.0,  7.5, 12.5, 19.0, 36.0],
     [ 7.0,  9.5, 16.0, 22.0, 39.0],
-    [10.0, 10.5, 17.0, 24.0, 42.0],
-    [12.0, 13.6, 19.5, 25.0, 45.0],
+    [10.5, 11.0, 17.5, 25.0, 43.0],
+    [13.0, 14.5, 20.5, 27.0, 47.0],
 ])
 
 
@@ -52,10 +52,10 @@ class Config:
     heights: list[int] = field(default_factory=lambda: [3, 5, 10, 15, 20])
     points: list[str] = field(default_factory=lambda: ["P1", "P2", "P3", "P4", "P5"])
     repeats: int = 3
-    height_amplifier: float = 1.40
-    wind_compression: float = 0.62
-    sat_effect: float = 0.05
-    cloud_effect: float = 0.0005
+    height_amplifier: float = 0.55
+    wind_compression: float = 0.50
+    sat_effect: float = 0.020
+    cloud_effect: float = 0.15
     plateau_wind_boost: float = 0.10
     day_bias_scale: float = 0.04
     point_bias_scale: float = 0.02
@@ -98,7 +98,7 @@ def interpolate_sigma(h: float, v: float) -> float:
         + c10 * ht * (1 - vt)
         + c11 * ht * vt
     )
-    return float(sigma_cm) * 10.0  # см → мм
+    return float(sigma_cm) * 8.0  # см → мм (÷1.25 для компенсации mean Rayleigh)
 
 
 # ═══════════════════════════════════════════════════════════════════════
