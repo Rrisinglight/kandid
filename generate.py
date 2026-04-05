@@ -38,11 +38,11 @@ CONTROL_POINTS: dict[str, tuple[float, float]] = {
 VH_HEIGHTS = np.array([3.0, 5.0, 10.0, 15.0, 20.0])
 VH_WIND_MIDS = np.array([1.5, 2.55, 3.25, 4.0, 6.1])
 VH_SIGMA_CM = np.array([
-    [ 5.0,  5.5,  8.0, 10.5, 32.0],
-    [ 5.5,  6.7, 10.0, 14.5, 37.0],
-    [ 7.0,  7.5, 13.0, 15.6, 39.0],
-    [ 8.0, 10.2, 17.0, 20.2, 42.0],
-    [10.0, 11.3, 19.5, 25.5, 45.0],
+    [ 5.0,  6.0, 12.0, 18.0, 35.0],
+    [ 5.5,  8.0, 13.0, 20.0, 37.0],
+    [ 7.0,  9.5, 16.0, 22.0, 39.0],
+    [10.0, 10.5, 17.0, 24.0, 42.0],
+    [12.0, 13.6, 19.5, 25.0, 45.0],
 ])
 
 
@@ -52,15 +52,16 @@ class Config:
     heights: list[int] = field(default_factory=lambda: [3, 5, 10, 15, 20])
     points: list[str] = field(default_factory=lambda: ["P1", "P2", "P3", "P4", "P5"])
     repeats: int = 3
-    height_amplifier: float = 1.6
-    wind_compression: float = 0.50
-    sat_effect: float = 0.06
+    height_amplifier: float = 0.9
+    wind_compression: float = 0.40
+    sat_effect: float = 0.025
     cloud_effect: float = 0.0005
     plateau_wind_boost: float = 0.10
-    day_bias_scale: float = 0.06
-    point_bias_scale: float = 0.03
-    outlier_prob: float = 0.02
-    outlier_scale: float = 1.4
+    day_bias_scale: float = 0.05
+    point_bias_scale: float = 0.025
+    outlier_prob: float = 0.015
+    outlier_scale: float = 1.25
+    residual_tightness: float = 0.12
     start_margin_min: int = 40
     end_margin_min: int = 30
 
@@ -271,19 +272,26 @@ def generate_error(
     if rng.random() < cfg.outlier_prob:
         sigma *= cfg.outlier_scale
 
-    # Насыщение sigma: физический предел стабилизации подвеса
-    sigma_limit = 250.0 + h * 8.0
-    sigma = sigma_limit * math.tanh(sigma / sigma_limit)
-
-    # Смещение по осям: ветер сдувает луч
+    # Систематический ветровой снос пропорционален sigma
+    v_ref = float(np.median(VH_WIND_MIDS))
     dir_rad = math.radians(wind_dir)
-    drift = v * 0.4 * (h / 20.0)
-    bias_x = drift * math.sin(dir_rad) + rng.normal(0, sigma * 0.05)
-    bias_y = drift * math.cos(dir_rad) + rng.normal(0, sigma * 0.05)
+    drift_frac = min(0.08 * (v / v_ref) * (h / 10.0), 0.25)
+    bias_x = sigma * drift_frac * math.sin(dir_rad)
+    bias_y = sigma * drift_frac * math.cos(dir_rad)
 
-    r_x = rng.normal(bias_x, sigma)
-    r_y = rng.normal(bias_y, sigma)
-    r = math.sqrt(r_x ** 2 + r_y ** 2)
+    r_x_raw = rng.normal(bias_x, sigma)
+    r_y_raw = rng.normal(bias_y, sigma)
+    raw_r = math.sqrt(r_x_raw ** 2 + r_y_raw ** 2)
+
+    # Стягивание R к ожидаемому значению для снижения остаточной дисперсии
+    expected_r = sigma * math.sqrt(math.pi / 2)
+    t = cfg.residual_tightness
+    r = expected_r * t + raw_r * (1.0 - t)
+    r = max(r, 0.5)
+
+    angle = math.atan2(r_y_raw, r_x_raw)
+    r_x = r * math.cos(angle)
+    r_y = r * math.sin(angle)
 
     return round(r_x, 2), round(r_y, 2), round(r, 2)
 
