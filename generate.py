@@ -52,16 +52,16 @@ class Config:
     heights: list[int] = field(default_factory=lambda: [3, 5, 10, 15, 20])
     points: list[str] = field(default_factory=lambda: ["P1", "P2", "P3", "P4", "P5"])
     repeats: int = 3
-    height_amplifier: float = 0.9
-    wind_compression: float = 0.40
-    sat_effect: float = 0.025
+    height_amplifier: float = 1.40
+    wind_compression: float = 0.62
+    sat_effect: float = 0.05
     cloud_effect: float = 0.0005
     plateau_wind_boost: float = 0.10
-    day_bias_scale: float = 0.05
-    point_bias_scale: float = 0.025
-    outlier_prob: float = 0.015
-    outlier_scale: float = 1.25
-    residual_tightness: float = 0.12
+    day_bias_scale: float = 0.04
+    point_bias_scale: float = 0.02
+    outlier_prob: float = 0.012
+    outlier_scale: float = 1.20
+    residual_tightness: float = 0.43
     start_margin_min: int = 40
     end_margin_min: int = 30
 
