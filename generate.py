@@ -54,14 +54,15 @@ class Config:
     repeats: int = 3
     height_amplifier: float = 0.55
     wind_compression: float = 0.50
+    wind_height_scale: float = 0.20
     sat_effect: float = 0.020
     cloud_effect: float = 0.15
     plateau_wind_boost: float = 0.10
     day_bias_scale: float = 0.04
     point_bias_scale: float = 0.02
-    outlier_prob: float = 0.012
-    outlier_scale: float = 1.20
-    residual_tightness: float = 0.43
+    outlier_prob: float = 0.008
+    outlier_scale: float = 1.12
+    residual_tightness: float = 0.50
     start_margin_min: int = 40
     end_margin_min: int = 30
 
@@ -240,22 +241,28 @@ def generate_error(
     rng: Generator,
     cfg: Config,
 ) -> tuple[float, float, float]:
-    # Сжатие ветрового диапазона для lookup: H остаётся доминирующим
+    h_norm = (h - VH_HEIGHTS[0]) / (VH_HEIGHTS[-1] - VH_HEIGHTS[0])
     v_ref = float(np.median(VH_WIND_MIDS))
-    v_compressed = v_ref + (v - v_ref) * cfg.wind_compression
+
+    # Высотно-зависимое сжатие ветра: на малой высоте ветер сильнее
+    # компрессируется (меньше влияет), на большой — проходит ближе
+    # к реальному значению (рычаг высоты усиливает эффект ветра)
+    if v > v_ref:
+        eff_comp = cfg.wind_compression + cfg.wind_height_scale * (2.0 * h_norm - 1.0)
+    else:
+        eff_comp = cfg.wind_compression
+    v_compressed = v_ref + (v - v_ref) * eff_comp
     v_compressed = max(0.3, v_compressed)
 
     sigma = interpolate_sigma(h, v_compressed)
 
     # Усиление высотного эффекта поверх VH-таблицы
-    h_norm = (h - VH_HEIGHTS[0]) / (VH_HEIGHTS[-1] - VH_HEIGHTS[0])
     sigma *= 1.0 + cfg.height_amplifier * h_norm ** 1.3
 
     # Плато 15-20 м: повышенная чувствительность к ветру
     if h >= 15.0:
-        v_median = float(np.median(VH_WIND_MIDS))
         v_range = float(VH_WIND_MIDS[-1] - VH_WIND_MIDS[0])
-        sigma *= 1.0 + cfg.plateau_wind_boost * (v - v_median) / v_range
+        sigma *= 1.0 + cfg.plateau_wind_boost * (v - v_ref) / v_range
 
     # Спутники: 24 — нейтраль; меньше → хуже
     sigma *= 1.0 + cfg.sat_effect * (24.0 - sat)
@@ -273,7 +280,6 @@ def generate_error(
         sigma *= cfg.outlier_scale
 
     # Систематический ветровой снос пропорционален sigma
-    v_ref = float(np.median(VH_WIND_MIDS))
     dir_rad = math.radians(wind_dir)
     drift_frac = min(0.08 * (v / v_ref) * (h / 10.0), 0.25)
     bias_x = sigma * drift_frac * math.sin(dir_rad)
@@ -283,20 +289,21 @@ def generate_error(
     r_y_raw = rng.normal(bias_y, sigma)
     raw_r = math.sqrt(r_x_raw ** 2 + r_y_raw ** 2)
 
-    # Стягивание R к ожидаемому значению; вблизи центра (raw_r < 25%
-    # от expected) стягивание плавно отключается, чтобы сохранить
-    # естественные ближние попадания в цель
+    # Стягивание R к ожидаемому значению; вблизи центра стягивание
+    # плавно отключается, чтобы сохранить попадания в цель
     expected_r = sigma * math.sqrt(math.pi / 2)
     t = cfg.residual_tightness
     blended_r = expected_r * t + raw_r * (1.0 - t)
 
-    center_zone = expected_r * 0.20
+    center_zone = expected_r * 0.22
     if raw_r < center_zone and center_zone > 0:
         w = (raw_r / center_zone) ** 2
         r = raw_r * (1.0 - w) + blended_r * w
     else:
         r = blended_r
+
     r = max(r, 0.5)
+    r = min(r, expected_r * 3.0)
 
     angle = math.atan2(r_y_raw, r_x_raw)
     r_x = r * math.cos(angle)
