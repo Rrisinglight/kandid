@@ -38,11 +38,11 @@ CONTROL_POINTS: dict[str, tuple[float, float]] = {
 VH_HEIGHTS = np.array([3.0, 5.0, 10.0, 15.0, 20.0])
 VH_WIND_MIDS = np.array([1.5, 2.55, 3.25, 4.0, 6.1])
 VH_SIGMA_CM = np.array([
-    [ 4.0,  5.5, 11.0, 17.0, 34.0],
-    [ 5.0,  7.5, 12.5, 19.0, 36.0],
-    [ 7.0,  9.5, 16.0, 22.0, 39.0],
-    [10.5, 11.0, 17.5, 25.0, 43.0],
-    [13.0, 14.5, 20.5, 27.0, 47.0],
+    [ 4.0,  5.5,  8.0,  9.0, 19.0],
+    [ 5.0,  7.5,  9.0, 10.5, 22.0],
+    [ 7.0,  9.5, 11.0, 14.0, 25.0],
+    [10.5, 11.0, 13.5, 14.5, 29.0],
+    [13.0, 14.5, 15.5, 19.0, 36.0],
 ])
 
 
@@ -98,7 +98,7 @@ def interpolate_sigma(h: float, v: float) -> float:
         + c10 * ht * (1 - vt)
         + c11 * ht * vt
     )
-    return float(sigma_cm) * 8.0  # см → мм (÷1.25 для компенсации mean Rayleigh)
+    return float(sigma_cm) * 6.0  # σ_cm → σ_mm
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -283,10 +283,19 @@ def generate_error(
     r_y_raw = rng.normal(bias_y, sigma)
     raw_r = math.sqrt(r_x_raw ** 2 + r_y_raw ** 2)
 
-    # Стягивание R к ожидаемому значению для снижения остаточной дисперсии
+    # Стягивание R к ожидаемому значению; вблизи центра (raw_r < 25%
+    # от expected) стягивание плавно отключается, чтобы сохранить
+    # естественные ближние попадания в цель
     expected_r = sigma * math.sqrt(math.pi / 2)
     t = cfg.residual_tightness
-    r = expected_r * t + raw_r * (1.0 - t)
+    blended_r = expected_r * t + raw_r * (1.0 - t)
+
+    center_zone = expected_r * 0.20
+    if raw_r < center_zone and center_zone > 0:
+        w = (raw_r / center_zone) ** 2
+        r = raw_r * (1.0 - w) + blended_r * w
+    else:
+        r = blended_r
     r = max(r, 0.5)
 
     angle = math.atan2(r_y_raw, r_x_raw)

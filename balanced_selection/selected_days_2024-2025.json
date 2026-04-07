@@ -600,18 +600,6 @@
     "cloud_cover_mean": 89.5
   },
   {
-    "date": "2025-08-17",
-    "sunrise": "05:10",
-    "sunset": "20:07",
-    "weather_code": 51,
-    "weather_code_text": "Морось слабая",
-    "temperature_2m_mean": 15.9,
-    "wind_speed_10m_mean": 3.23,
-    "wind_gusts_10m_max": 10.3,
-    "wind_direction_10m_mean": 286.3,
-    "cloud_cover_mean": 48.1
-  },
-  {
     "date": "2025-08-22",
     "sunrise": "05:20",
     "sunset": "19:55",
