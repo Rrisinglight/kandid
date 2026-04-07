@@ -54,7 +54,7 @@ class Config:
     repeats: int = 3
     height_amplifier: float = 0.55
     wind_compression: float = 0.50
-    wind_height_scale: float = 0.20
+    wind_height_scale: float = 0.22
     sat_effect: float = 0.020
     cloud_effect: float = 0.15
     plateau_wind_boost: float = 0.10
@@ -62,7 +62,7 @@ class Config:
     point_bias_scale: float = 0.02
     outlier_prob: float = 0.008
     outlier_scale: float = 1.12
-    residual_tightness: float = 0.50
+    residual_tightness: float = 0.58
     start_margin_min: int = 40
     end_margin_min: int = 30
 
