@@ -1,0 +1,16 @@
+[Unit]
+Description=Voila dashboard (analysis.ipynb) for Kandid — localhost only, nginx /voila/
+After=network.target
+
+[Service]
+Type=simple
+User=r
+Group=r
+WorkingDirectory=/home/r/kandid
+Environment=PATH=/home/r/kandid/.venv/bin:/usr/bin:/bin
+ExecStart=/home/r/kandid/.venv/bin/voila analysis.ipynb --no-browser --Voila.ip=127.0.0.1 --port=8866 --Voila.base_url=/voila/ --Voila.auto_token=False --Voila.token= --VoilaConfiguration.preheat_kernel=False --VoilaConfiguration.default_pool_size=0 --VoilaConfiguration.progressive_rendering=True --VoilaConfiguration.show_tracebacks=True
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
