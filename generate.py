@@ -57,12 +57,13 @@ class Config:
     wind_height_scale: float = 0.22
     sat_effect: float = 0.020
     cloud_effect: float = 0.15
+    gust_effect: float = 0.10
     plateau_wind_boost: float = 0.10
     day_bias_scale: float = 0.04
     point_bias_scale: float = 0.02
     outlier_prob: float = 0.008
     outlier_scale: float = 1.12
-    residual_tightness: float = 0.58
+    residual_tightness: float = 0.63
     start_margin_min: int = 40
     end_margin_min: int = 30
 
@@ -198,6 +199,27 @@ def generate_local_wind(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Генератор локальных порывов
+# ═══════════════════════════════════════════════════════════════════════
+
+def generate_local_gusts(
+    base_wind: float,
+    gusts_max: float,
+    v_local: float,
+    time_frac: float,
+    rng: Generator,
+) -> float:
+    """Порыв для конкретного измерения: масштабируется от локального V
+    через дневной gust-ratio, модулируется суточным ходом и турбулентным шумом."""
+    day_ratio = gusts_max / max(base_wind, 0.5)
+    base_gust = v_local * day_ratio
+    diurnal = 0.9 + 0.2 * math.sin(math.pi * time_frac)
+    noise = rng.normal(0, 0.6 * day_ratio)
+    g = base_gust * diurnal + noise
+    return round(max(v_local + 0.3, min(g, gusts_max * 1.15)), 2)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Генератор спутников
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -233,6 +255,7 @@ def generate_local_wind_dir(base_dir: float, rng: Generator) -> float:
 def generate_error(
     h: float,
     v: float,
+    gusts: float,
     sat: int,
     cloud: float,
     day_bias: float,
@@ -264,6 +287,10 @@ def generate_error(
         v_range = float(VH_WIND_MIDS[-1] - VH_WIND_MIDS[0])
         sigma *= 1.0 + cfg.plateau_wind_boost * (v - v_ref) / v_range
 
+    # Порывистость: высокий gust-ratio увеличивает разброс
+    gust_ratio = gusts / max(v, 0.5)
+    sigma *= 1.0 + cfg.gust_effect * max(0.0, gust_ratio - 1.5)
+
     # Спутники: 24 — нейтраль; меньше → хуже
     sigma *= 1.0 + cfg.sat_effect * (24.0 - sat)
 
@@ -279,9 +306,9 @@ def generate_error(
     if rng.random() < cfg.outlier_prob:
         sigma *= cfg.outlier_scale
 
-    # Систематический ветровой снос пропорционален sigma
+    # Систематический ветровой снос: масштабируется с высотой
     dir_rad = math.radians(wind_dir)
-    drift_frac = min(0.08 * (v / v_ref) * (h / 10.0), 0.25)
+    drift_frac = min(0.20 * (v / v_ref) * (h / 10.0) ** 1.3, 0.40)
     bias_x = sigma * drift_frac * math.sin(dir_rad)
     bias_y = sigma * drift_frac * math.cos(dir_rad)
 
@@ -355,14 +382,17 @@ def generate_day(day: dict, cfg: Config, rng: Generator) -> list[dict]:
                 time_frac = max(0.0, min(1.0, elapsed / max(day_span, 1)))
 
                 v = generate_local_wind(base_wind, gusts_max, time_frac, rng)
+                gusts_local = generate_local_gusts(
+                    base_wind, gusts_max, v, time_frac, rng,
+                )
                 sat = generate_satellites(base_cloud, day_base_sat, rng)
                 cloud_local = generate_local_cloud(base_cloud, rng)
                 wind_dir_local = generate_local_wind_dir(base_dir, rng)
-                gusts_local = round(gusts_max + rng.normal(0, 0.4), 2)
 
                 r_x, r_y, r = generate_error(
-                    height, v, sat, cloud_local, day_bias,
-                    point_biases[point], wind_dir_local, rng, cfg,
+                    height, v, gusts_local, sat, cloud_local,
+                    day_bias, point_biases[point], wind_dir_local,
+                    rng, cfg,
                 )
 
                 rows.append({

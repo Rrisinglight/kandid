@@ -75,7 +75,7 @@ def load_measurements(input_dir: Path) -> pd.DataFrame:
 
     result = pd.concat(frames, ignore_index=True)
 
-    for col in ("H", "V", "cloud", "sat", "R", "r_x", "r_y"):
+    for col in ("H", "V", "cloud", "sat", "gusts", "R", "r_x", "r_y"):
         result[col] = pd.to_numeric(result[col], errors="coerce")
 
     result.dropna(subset=["H", "V", "R"], inplace=True)
@@ -88,21 +88,21 @@ def load_measurements(input_dir: Path) -> pd.DataFrame:
 
 def test_mixed_model(df: pd.DataFrame) -> dict:
     print("=" * 68)
-    print("1. MIXED LINEAR MODEL  (R ~ H + V + sat + cloud | date)")
+    print("1. MIXED LINEAR MODEL  (R ~ H + V + sat + gusts + cloud | date)")
     print("=" * 68)
 
     try:
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            md = mixedlm("R ~ H + V + sat + cloud", data=df, groups=df["date"])
+            md = mixedlm("R ~ H + V + sat + gusts + cloud", data=df, groups=df["date"])
             result = md.fit(reml=True)
         print(result.summary())
         coefs = result.fe_params
         pvals = result.pvalues
     except Exception:
         print("  Mixed model не сошёлся — fallback на OLS")
-        result = ols("R ~ H + V + sat + cloud", data=df).fit()
+        result = ols("R ~ H + V + sat + gusts + cloud", data=df).fit()
         print(result.summary())
         coefs = result.params
         pvals = result.pvalues
@@ -126,7 +126,7 @@ def test_factor_significance(mixed_result: dict) -> dict:
     print("=" * 68)
 
     verdicts: dict[str, str] = {}
-    for factor in ("H", "V", "sat", "cloud"):
+    for factor in ("H", "V", "sat", "gusts", "cloud"):
         p = pvals.get(factor, 1.0)
         if p < 0.001:
             verdict = "СИЛЬНО значим (p < 0.001)"
@@ -196,6 +196,7 @@ FACTOR_LABELS = {
     "C(H_factor)": "H",
     "V": "V",
     "sat": "Спутники",
+    "gusts": "Порывы",
     "cloud": "Облачность",
 }
 
@@ -204,14 +205,14 @@ def test_explained_variance(df: pd.DataFrame) -> dict:
     df_tmp = df.copy()
     df_tmp["H_factor"] = df_tmp["H"].astype(str)
 
-    model = ols("R ~ C(H_factor) + V + sat + cloud", data=df_tmp).fit()
+    model = ols("R ~ C(H_factor) + V + sat + gusts + cloud", data=df_tmp).fit()
     aov = anova_lm(model, typ=2)
 
     ss_resid = aov.loc["Residual", "sum_sq"]
     n = len(df_tmp)
 
     print("=" * 68)
-    print("3b. ДИСПЕРСИОННЫЙ АНАЛИЗ — η² (ANCOVA: R ~ C(H) + V + sat + cloud)")
+    print("3b. ДИСПЕРСИОННЫЙ АНАЛИЗ — η² (ANCOVA: R ~ C(H) + V + sat + gusts + cloud)")
     print("=" * 68)
 
     eta2_map: dict[str, float] = {}
@@ -219,7 +220,7 @@ def test_explained_variance(df: pd.DataFrame) -> dict:
     df_resid = aov.loc["Residual", "df"]
     ms_resid = ss_resid / df_resid
 
-    for factor in ("C(H_factor)", "V", "sat", "cloud"):
+    for factor in ("C(H_factor)", "V", "sat", "gusts", "cloud"):
         if factor not in aov.index:
             continue
         ss_f = aov.loc[factor, "sum_sq"]
@@ -284,7 +285,7 @@ def test_heteroscedasticity(df: pd.DataFrame) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_normality(df: pd.DataFrame, output_dir: Path) -> dict:
-    model = ols("R ~ H + V + sat + cloud", data=df).fit()
+    model = ols("R ~ H + V + sat + gusts + cloud", data=df).fit()
     residuals = model.resid
 
     print("=" * 68)
@@ -308,7 +309,7 @@ def test_normality(df: pd.DataFrame, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6, 6))
     stats.probplot(residuals, dist="norm", plot=ax)
-    ax.set_title("QQ-plot остатков OLS (R ~ H + V + sat + cloud)")
+    ax.set_title("QQ-plot остатков OLS (R ~ H + V + sat + gusts + cloud)")
     ax.grid(True, alpha=0.3)
     qq_path = output_dir / "qq_plot.png"
     fig.savefig(qq_path, dpi=150, bbox_inches="tight")
@@ -328,7 +329,7 @@ def test_spearman(df: pd.DataFrame) -> dict:
     print("=" * 68)
 
     results: dict[str, tuple[float, float]] = {}
-    for factor in ("H", "V", "sat", "cloud"):
+    for factor in ("H", "V", "sat", "gusts", "cloud"):
         rho, p = stats.spearmanr(df[factor], df["R"])
         results[factor] = (rho, p)
         sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else ""
@@ -347,11 +348,11 @@ def test_vif(df: pd.DataFrame) -> dict:
     print("7. VIF — мультиколлинеарность предикторов")
     print("=" * 68)
 
-    predictors = df[["H", "V", "sat", "cloud"]].copy()
+    predictors = df[["H", "V", "sat", "gusts", "cloud"]].copy()
     predictors["const"] = 1.0
 
     vif_values: dict[str, float] = {}
-    names = ["H", "V", "sat", "cloud"]
+    names = ["H", "V", "sat", "gusts", "cloud"]
     for i, name in enumerate(names):
         vif = variance_inflation_factor(predictors.values, i)
         vif_values[name] = vif
@@ -394,7 +395,7 @@ def plot_diagnostics(df: pd.DataFrame, output_dir: Path) -> None:
 
     # 3. Residuals vs fitted
     ax = axes[0, 2]
-    model = ols("R ~ H + V + sat + cloud", data=df).fit()
+    model = ols("R ~ H + V + sat + gusts + cloud", data=df).fit()
     ax.scatter(model.fittedvalues, model.resid, alpha=0.15, s=4, color="coral")
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_xlabel("Fitted")
@@ -552,7 +553,7 @@ def main() -> None:
     print("─" * 68)
     print("ОПИСАТЕЛЬНАЯ СТАТИСТИКА")
     print("─" * 68)
-    for col in ("H", "V", "sat", "cloud", "R"):
+    for col in ("H", "V", "sat", "gusts", "cloud", "R"):
         s = df[col]
         print(f"  {col:6s}: mean={s.mean():8.2f}, std={s.std():8.2f}, "
               f"min={s.min():8.2f}, max={s.max():8.2f}")
