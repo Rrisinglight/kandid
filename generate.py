@@ -54,8 +54,8 @@ class Config:
     repeats: int = 3
     height_amplifier: float = 0.55
     wind_compression: float = 0.50
-    wind_height_scale: float = 0.22
-    sat_effect: float = 0.020
+    wind_height_scale: float = 0.25
+    sat_effect: float = 0.04
     cloud_effect: float = 0.15
     gust_effect: float = 0.10
     plateau_wind_boost: float = 0.10
