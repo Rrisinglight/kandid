@@ -33,16 +33,16 @@ CONTROL_POINTS: dict[str, tuple[float, float]] = {
     "P5": (55.915958, 36.252389),
 }
 
-# ── VH-таблица: sigma ошибки в сантиметрах ──────────────────────────
+# ── VH-таблица: средний радиус ошибки в сантиметрах ────────────────
 # Строки — высоты (м), столбцы — середины ветровых бинов (м/с).
 VH_HEIGHTS = np.array([3.0, 5.0, 10.0, 15.0, 20.0])
 VH_WIND_MIDS = np.array([1.5, 2.55, 3.25, 4.0, 6.1])
 VH_SIGMA_CM = np.array([
-    [ 4.0,  5.5,  8.0,  9.0, 19.0],
-    [ 5.0,  7.5,  9.0, 10.5, 22.0],
-    [ 7.0,  9.5, 11.0, 14.0, 25.0],
-    [10.5, 11.0, 13.5, 14.5, 29.0],
-    [13.0, 14.5, 15.5, 19.0, 36.0],
+    [ 3.0,  4.0,  5.5,  7.0, 15.0],   # H=3
+    [ 4.5,  6.5,  8.0,  9.5, 20.0],   # H=5
+    [ 7.0,  9.5, 11.0, 14.0, 25.0],   # H=10
+    [11.0, 13.5, 16.5, 22.0, 35.0],   # H=15
+    [15.0, 18.0, 21.0, 28.0, 45.0],   # H=20
 ])
 
 
@@ -52,18 +52,13 @@ class Config:
     heights: list[int] = field(default_factory=lambda: [3, 5, 10, 15, 20])
     points: list[str] = field(default_factory=lambda: ["P1", "P2", "P3", "P4", "P5"])
     repeats: int = 3
-    height_amplifier: float = 0.55
-    wind_compression: float = 0.50
-    wind_height_scale: float = 0.25
-    sat_effect: float = 0.04
-    cloud_effect: float = 0.15
-    gust_effect: float = 0.10
-    plateau_wind_boost: float = 0.10
-    day_bias_scale: float = 0.04
-    point_bias_scale: float = 0.02
-    outlier_prob: float = 0.008
-    outlier_scale: float = 1.12
-    residual_tightness: float = 0.63
+    day_bias_scale: float = 0.07
+    point_bias_scale: float = 0.04
+    r_cv: float = 0.15
+    drift_kappa: float = 0.50
+    rayleigh_frac: float = 0.08
+    outlier_prob: float = 0.005
+    outlier_scale: float = 1.40
     start_margin_min: int = 40
     end_margin_min: int = 30
 
@@ -84,8 +79,8 @@ def _interp1d_clamp(x: float, xs: np.ndarray, ys: np.ndarray) -> tuple[int, int,
     return idx, idx + 1, t
 
 
-def interpolate_sigma(h: float, v: float) -> float:
-    """Билинейная интерполяция VH-таблицы. Возвращает sigma в мм."""
+def interpolate_mean_r(h: float, v: float) -> float:
+    """Билинейная интерполяция VH-таблицы. Возвращает средний R в мм."""
     hi0, hi1, ht = _interp1d_clamp(h, VH_HEIGHTS, VH_SIGMA_CM[:, 0])
     vi0, vi1, vt = _interp1d_clamp(v, VH_WIND_MIDS, VH_SIGMA_CM[0, :])
 
@@ -100,7 +95,7 @@ def interpolate_sigma(h: float, v: float) -> float:
         + c10 * ht * (1 - vt)
         + c11 * ht * vt
     )
-    return float(sigma_cm) * 6.0  # σ_cm → σ_mm
+    return float(sigma_cm) * 10.0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -224,8 +219,8 @@ def generate_local_gusts(
 # ═══════════════════════════════════════════════════════════════════════
 
 def generate_satellites(cloud_cover: float, day_base_sat: int, rng: Generator) -> int:
-    cloud_penalty = int(round(cloud_cover / 100.0 * 4.0))
-    noise = rng.integers(-3, 4)
+    cloud_penalty = 0
+    noise = rng.integers(-6, 7)
     sat = day_base_sat - cloud_penalty + noise
     return int(np.clip(sat, 16, 32))
 
@@ -235,8 +230,9 @@ def generate_satellites(cloud_cover: float, day_base_sat: int, rng: Generator) -
 # ═══════════════════════════════════════════════════════════════════════
 
 def generate_local_cloud(base_cloud: float, rng: Generator) -> float:
-    noise = rng.normal(0, 4.0)
-    return round(float(np.clip(base_cloud + noise, 0, 100)), 1)
+    signal = 50.0 + 0.25 * (base_cloud - 50.0)
+    noise = rng.normal(0, 20.0)
+    return round(float(np.clip(signal + noise, 0, 100)), 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -264,77 +260,34 @@ def generate_error(
     rng: Generator,
     cfg: Config,
 ) -> tuple[float, float, float]:
-    h_norm = (h - VH_HEIGHTS[0]) / (VH_HEIGHTS[-1] - VH_HEIGHTS[0])
+    mean_r = interpolate_mean_r(h, v)
+    mean_r *= max(1.0 + day_bias + point_bias, 0.5)
+    mean_r = max(mean_r, 0.5)
+
+    if rng.random() < cfg.outlier_prob:
+        mean_r *= cfg.outlier_scale
+
+    dir_rad = math.radians(wind_dir)
     v_ref = float(np.median(VH_WIND_MIDS))
 
-    # Высотно-зависимое сжатие ветра: на малой высоте ветер сильнее
-    # компрессируется (меньше влияет), на большой — проходит ближе
-    # к реальному значению (рычаг высоты усиливает эффект ветра)
-    if v > v_ref:
-        eff_comp = cfg.wind_compression + cfg.wind_height_scale * (2.0 * h_norm - 1.0)
+    if rng.random() < cfg.rayleigh_frac:
+        sigma_axis = mean_r / math.sqrt(math.pi / 2.0)
+        drift = sigma_axis * cfg.drift_kappa * (v / v_ref)
+        bias_x = drift * math.sin(dir_rad)
+        bias_y = drift * math.cos(dir_rad)
+        r_x = rng.normal(bias_x, sigma_axis)
+        r_y = rng.normal(bias_y, sigma_axis)
+        r = math.hypot(r_x, r_y)
     else:
-        eff_comp = cfg.wind_compression
-    v_compressed = v_ref + (v - v_ref) * eff_comp
-    v_compressed = max(0.3, v_compressed)
+        r_std = max(3.0, mean_r * cfg.r_cv)
+        r = rng.normal(mean_r, r_std)
+        r = max(r, 0.1)
+        kappa = max(0.0, cfg.drift_kappa * v / v_ref)
+        angle = rng.vonmises(dir_rad, kappa)
+        r_x = r * math.sin(angle)
+        r_y = r * math.cos(angle)
 
-    sigma = interpolate_sigma(h, v_compressed)
-
-    # Усиление высотного эффекта поверх VH-таблицы
-    sigma *= 1.0 + cfg.height_amplifier * h_norm ** 1.3
-
-    # Плато 15-20 м: повышенная чувствительность к ветру
-    if h >= 15.0:
-        v_range = float(VH_WIND_MIDS[-1] - VH_WIND_MIDS[0])
-        sigma *= 1.0 + cfg.plateau_wind_boost * (v - v_ref) / v_range
-
-    # Порывистость: высокий gust-ratio увеличивает разброс
-    gust_ratio = gusts / max(v, 0.5)
-    sigma *= 1.0 + cfg.gust_effect * max(0.0, gust_ratio - 1.5)
-
-    # Спутники: 24 — нейтраль; меньше → хуже
-    sigma *= 1.0 + cfg.sat_effect * (24.0 - sat)
-
-    # Облачность: практически незначительный эффект
-    sigma *= 1.0 + cfg.cloud_effect * cloud / 100.0
-
-    # «Почерк дня» и «почерк точки»
-    sigma *= 1.0 + day_bias + point_bias
-
-    sigma = max(sigma, 0.5)
-
-    # Редкие выбросы
-    if rng.random() < cfg.outlier_prob:
-        sigma *= cfg.outlier_scale
-
-    # Систематический ветровой снос: масштабируется с высотой
-    dir_rad = math.radians(wind_dir)
-    drift_frac = min(0.20 * (v / v_ref) * (h / 10.0) ** 1.3, 0.40)
-    bias_x = sigma * drift_frac * math.sin(dir_rad)
-    bias_y = sigma * drift_frac * math.cos(dir_rad)
-
-    r_x_raw = rng.normal(bias_x, sigma)
-    r_y_raw = rng.normal(bias_y, sigma)
-    raw_r = math.sqrt(r_x_raw ** 2 + r_y_raw ** 2)
-
-    # Стягивание R к ожидаемому значению; вблизи центра стягивание
-    # плавно отключается, чтобы сохранить попадания в цель
-    expected_r = sigma * math.sqrt(math.pi / 2)
-    t = cfg.residual_tightness
-    blended_r = expected_r * t + raw_r * (1.0 - t)
-
-    center_zone = expected_r * 0.22
-    if raw_r < center_zone and center_zone > 0:
-        w = (raw_r / center_zone) ** 2
-        r = raw_r * (1.0 - w) + blended_r * w
-    else:
-        r = blended_r
-
-    r = max(r, 0.5)
-    r = min(r, expected_r * 3.0)
-
-    angle = math.atan2(r_y_raw, r_x_raw)
-    r_x = r * math.cos(angle)
-    r_y = r * math.sin(angle)
+    r = max(r, 0.1)
 
     return round(r_x, 2), round(r_y, 2), round(r, 2)
 

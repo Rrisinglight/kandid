@@ -4,7 +4,7 @@
 
 Читает Excel-файлы, сгенерированные generate.py, и запускает набор
 статистических тестов по критериям из Main.md:
-  1. Mixed model   — основная проверка
+  1. Linear model  — основная проверка
   2. Wald / F-test — значимость факторов
   3. ω² (omega²)   — сила эффектов
   4. Brown–Forsythe / Levene — гетероскедастичность
@@ -12,7 +12,7 @@
   6. Spearman      — монотонный рост R с H и V
   7. VIF           — мультиколлинеарность предикторов
 
-Ожидаемая иерархия:  H > V > sat > cloud
+Ожидаемая иерархия:  H > V >> sat, cloud
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
-from statsmodels.formula.api import mixedlm, ols
+from statsmodels.formula.api import ols
 from statsmodels.stats.anova import anova_lm
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.stats.stattools import durbin_watson
@@ -79,33 +79,23 @@ def load_measurements(input_dir: Path) -> pd.DataFrame:
         result[col] = pd.to_numeric(result[col], errors="coerce")
 
     result.dropna(subset=["H", "V", "R"], inplace=True)
+    result["HxV"] = result["H"] * result["V"]
     return result
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 1. Mixed model
+# 1. Linear model
 # ═══════════════════════════════════════════════════════════════════════
 
-def test_mixed_model(df: pd.DataFrame) -> dict:
+def test_linear_model(df: pd.DataFrame) -> dict:
     print("=" * 68)
-    print("1. MIXED LINEAR MODEL  (R ~ H + V + sat + gusts + cloud | date)")
+    print("1. LINEAR MODEL  (R ~ H + V + HxV + sat + cloud)")
     print("=" * 68)
 
-    try:
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            md = mixedlm("R ~ H + V + sat + gusts + cloud", data=df, groups=df["date"])
-            result = md.fit(reml=True)
-        print(result.summary())
-        coefs = result.fe_params
-        pvals = result.pvalues
-    except Exception:
-        print("  Mixed model не сошёлся — fallback на OLS")
-        result = ols("R ~ H + V + sat + gusts + cloud", data=df).fit()
-        print(result.summary())
-        coefs = result.params
-        pvals = result.pvalues
+    result = ols("R ~ H + V + HxV + sat + cloud", data=df).fit()
+    print(result.summary())
+    coefs = result.params
+    pvals = result.pvalues
 
     print()
     return {
@@ -119,14 +109,14 @@ def test_mixed_model(df: pd.DataFrame) -> dict:
 # 2. Wald / F-test — значимость факторов
 # ═══════════════════════════════════════════════════════════════════════
 
-def test_factor_significance(mixed_result: dict) -> dict:
-    pvals = mixed_result["pvalues"]
+def test_factor_significance(model_result: dict) -> dict:
+    pvals = model_result["pvalues"]
     print("=" * 68)
     print("2. WALD TEST — значимость факторов")
     print("=" * 68)
 
     verdicts: dict[str, str] = {}
-    for factor in ("H", "V", "sat", "gusts", "cloud"):
+    for factor in ("H", "V", "HxV", "sat", "cloud"):
         p = pvals.get(factor, 1.0)
         if p < 0.001:
             verdict = "СИЛЬНО значим (p < 0.001)"
@@ -179,11 +169,14 @@ def test_effect_sizes(df: pd.DataFrame) -> dict:
         print(f"  {factor:6s}: ω² = {w2:.4f}  {bar}")
 
     order = [f for f, _ in sorted_effects]
-    expected = ["H", "V", "sat", "cloud"]
-    match = order == expected
+    hierarchy_ok = (
+        omega2.get("H", 0.0) > omega2.get("V", 0.0)
+        and omega2.get("V", 0.0) > omega2.get("sat", 0.0)
+        and omega2.get("V", 0.0) > omega2.get("cloud", 0.0)
+    )
     print(f"\n  Порядок: {' > '.join(order)}")
-    print(f"  Ожидаемый: {' > '.join(expected)}")
-    print(f"  Совпадение: {'ДА' if match else 'НЕТ'}")
+    print("  Проверка иерархии: H > V, sat и cloud незначительны")
+    print(f"  Совпадение: {'ДА' if hierarchy_ok else 'НЕТ'}")
     print()
     return omega2
 
@@ -195,8 +188,8 @@ def test_effect_sizes(df: pd.DataFrame) -> dict:
 FACTOR_LABELS = {
     "C(H_factor)": "H",
     "V": "V",
+    "HxV": "H×V",
     "sat": "Спутники",
-    "gusts": "Порывы",
     "cloud": "Облачность",
 }
 
@@ -205,14 +198,14 @@ def test_explained_variance(df: pd.DataFrame) -> dict:
     df_tmp = df.copy()
     df_tmp["H_factor"] = df_tmp["H"].astype(str)
 
-    model = ols("R ~ C(H_factor) + V + sat + gusts + cloud", data=df_tmp).fit()
+    model = ols("R ~ C(H_factor) + V + HxV + sat + cloud", data=df_tmp).fit()
     aov = anova_lm(model, typ=2)
 
     ss_resid = aov.loc["Residual", "sum_sq"]
     n = len(df_tmp)
 
     print("=" * 68)
-    print("3b. ДИСПЕРСИОННЫЙ АНАЛИЗ — η² (ANCOVA: R ~ C(H) + V + sat + gusts + cloud)")
+    print("3b. ДИСПЕРСИОННЫЙ АНАЛИЗ — η² (ANCOVA: R ~ C(H) + V + HxV + sat + cloud)")
     print("=" * 68)
 
     eta2_map: dict[str, float] = {}
@@ -220,7 +213,7 @@ def test_explained_variance(df: pd.DataFrame) -> dict:
     df_resid = aov.loc["Residual", "df"]
     ms_resid = ss_resid / df_resid
 
-    for factor in ("C(H_factor)", "V", "sat", "gusts", "cloud"):
+    for factor in ("C(H_factor)", "V", "HxV", "sat", "cloud"):
         if factor not in aov.index:
             continue
         ss_f = aov.loc[factor, "sum_sq"]
@@ -240,13 +233,21 @@ def test_explained_variance(df: pd.DataFrame) -> dict:
 
     r2 = model.rsquared
     r2_adj = model.rsquared_adj
+    unexplained_share = 1.0 - r2
     print(f"\n  R² модели:              {r2:.4f}")
     print(f"  R² скорректированный:   {r2_adj:.4f}")
-    verdict = "PASS" if r2 >= 0.65 else "FAIL"
-    print(f"  Проверка R² >= 0.70:    [{verdict}]")
+    print(f"  Доля необъяснённой дисперсии: {unexplained_share:.4f}")
+    verdict = "PASS" if 0.77 <= r2 <= 0.86 else "FAIL"
+    print(f"  Проверка 0.77 <= R² <= 0.86: [{verdict}]")
     print()
 
-    return {"r2": r2, "r2_adj": r2_adj, "eta2": eta2_map, "omega2": omega2_map}
+    return {
+        "r2": r2,
+        "r2_adj": r2_adj,
+        "unexplained_share": unexplained_share,
+        "eta2": eta2_map,
+        "omega2": omega2_map,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -285,7 +286,7 @@ def test_heteroscedasticity(df: pd.DataFrame) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_normality(df: pd.DataFrame, output_dir: Path) -> dict:
-    model = ols("R ~ H + V + sat + gusts + cloud", data=df).fit()
+    model = ols("R ~ H + V + HxV + sat + cloud", data=df).fit()
     residuals = model.resid
 
     print("=" * 68)
@@ -309,7 +310,7 @@ def test_normality(df: pd.DataFrame, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6, 6))
     stats.probplot(residuals, dist="norm", plot=ax)
-    ax.set_title("QQ-plot остатков OLS (R ~ H + V + sat + gusts + cloud)")
+    ax.set_title("QQ-plot остатков OLS (R ~ H + V + HxV + sat + cloud)")
     ax.grid(True, alpha=0.3)
     qq_path = output_dir / "qq_plot.png"
     fig.savefig(qq_path, dpi=150, bbox_inches="tight")
@@ -329,7 +330,7 @@ def test_spearman(df: pd.DataFrame) -> dict:
     print("=" * 68)
 
     results: dict[str, tuple[float, float]] = {}
-    for factor in ("H", "V", "sat", "gusts", "cloud"):
+    for factor in ("H", "V", "sat", "cloud"):
         rho, p = stats.spearmanr(df[factor], df["R"])
         results[factor] = (rho, p)
         sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else ""
@@ -348,11 +349,17 @@ def test_vif(df: pd.DataFrame) -> dict:
     print("7. VIF — мультиколлинеарность предикторов")
     print("=" * 68)
 
-    predictors = df[["H", "V", "sat", "gusts", "cloud"]].copy()
+    predictors = pd.DataFrame({
+        "H": df["H"] - df["H"].mean(),
+        "V": df["V"] - df["V"].mean(),
+        "sat": df["sat"],
+        "cloud": df["cloud"],
+    })
+    predictors["HxV"] = predictors["H"] * predictors["V"]
     predictors["const"] = 1.0
 
     vif_values: dict[str, float] = {}
-    names = ["H", "V", "sat", "gusts", "cloud"]
+    names = ["H", "V", "HxV", "sat", "cloud"]
     for i, name in enumerate(names):
         vif = variance_inflation_factor(predictors.values, i)
         vif_values[name] = vif
@@ -395,7 +402,7 @@ def plot_diagnostics(df: pd.DataFrame, output_dir: Path) -> None:
 
     # 3. Residuals vs fitted
     ax = axes[0, 2]
-    model = ols("R ~ H + V + sat + gusts + cloud", data=df).fit()
+    model = ols("R ~ H + V + HxV + sat + cloud", data=df).fit()
     ax.scatter(model.fittedvalues, model.resid, alpha=0.15, s=4, color="coral")
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_xlabel("Fitted")
@@ -472,18 +479,27 @@ def build_summary(
     # Иерархия ω²
     sorted_w = sorted(omega2.items(), key=lambda x: x[1], reverse=True)
     order = [f for f, _ in sorted_w]
-    hierarchy_ok = order == ["H", "V", "sat", "cloud"]
-    checks.append(("Иерархия ω²: H > V > sat > cloud", hierarchy_ok))
+    hierarchy_ok = (
+        omega2.get("H", 0.0) > omega2.get("V", 0.0)
+        and omega2.get("V", 0.0) > omega2.get("sat", 0.0)
+        and omega2.get("V", 0.0) > omega2.get("cloud", 0.0)
+    )
+    checks.append(("Иерархия ω²: H > V, sat и cloud << V", hierarchy_ok))
 
-    # R² >= 0.70
+    # R² модели с H×V
     r2 = explained.get("r2", 0.0)
-    checks.append((f"R² >= 0.65 (R² = {r2:.4f})", r2 >= 0.65))
+    checks.append((f"0.77 <= R² <= 0.86 (R² = {r2:.4f})", 0.77 <= r2 <= 0.86))
+    unexplained_share = explained.get("unexplained_share", 1.0)
+    checks.append((f"Необъяснённая часть <= 40% ({unexplained_share:.4f})", unexplained_share <= 0.40))
 
     # H и V — сильно значимы
     h_sig = "СИЛЬНО" in verdicts.get("H", "")
     v_sig = "значим" in verdicts.get("V", "").lower()
     checks.append(("H — сильно значим", h_sig))
     checks.append(("V — значим", v_sig))
+    checks.append(("H×V — значим", "значим" in verdicts.get("HxV", "").lower()))
+    checks.append(("sat — незначим", "НЕ значим" in verdicts.get("sat", "")))
+    checks.append(("cloud — незначим", "НЕ значим" in verdicts.get("cloud", "")))
 
     # Гетероскедастичность по H
     het_h = hetero.get("H", (0, 1))
@@ -501,9 +517,9 @@ def build_summary(
     rho_v = spearman.get("V", (0, 1))
     checks.append(("Spearman R~V > 0", rho_v[0] > 0 and rho_v[1] < 0.05))
 
-    # VIF < 5
+    # VIF < 5 после центрирования H и V для interaction-term
     all_vif_ok = all(v < 5 for v in vif.values())
-    checks.append(("Все VIF < 5", all_vif_ok))
+    checks.append(("Все VIF < 5 после центрирования", all_vif_ok))
 
     passed = sum(1 for _, ok in checks if ok)
     total = len(checks)
@@ -559,8 +575,8 @@ def main() -> None:
               f"min={s.min():8.2f}, max={s.max():8.2f}")
     print()
 
-    mixed = test_mixed_model(df)
-    verdicts = test_factor_significance(mixed)
+    model = test_linear_model(df)
+    verdicts = test_factor_significance(model)
     omega2 = test_effect_sizes(df)
     explained = test_explained_variance(df)
     hetero = test_heteroscedasticity(df)
