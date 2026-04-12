@@ -41,8 +41,8 @@ VH_SIGMA_CM = np.array([
     [ 3.0,  4.0,  5.5,  7.0, 15.0],   # H=3
     [ 4.5,  6.5,  8.0,  9.5, 20.0],   # H=5
     [ 7.0,  9.5, 11.0, 14.0, 25.0],   # H=10
-    [11.0, 13.5, 16.5, 22.0, 35.0],   # H=15
-    [15.0, 18.0, 21.0, 28.0, 45.0],   # H=20
+    [11.0, 14.5, 18.0, 24.0, 35.0],   # H=15
+    [15.0, 19.0, 22.0, 29.0, 45.0],   # H=20
 ])
 
 
@@ -55,8 +55,10 @@ class Config:
     day_bias_scale: float = 0.07
     point_bias_scale: float = 0.04
     r_cv: float = 0.15
-    drift_kappa: float = 0.50
+    drift_kappa: float = 0.20
     rayleigh_frac: float = 0.08
+    sat_scale: float = 0.003
+    cloud_scale: float = 0.015
     outlier_prob: float = 0.005
     outlier_scale: float = 1.40
     start_margin_min: int = 40
@@ -262,6 +264,8 @@ def generate_error(
 ) -> tuple[float, float, float]:
     mean_r = interpolate_mean_r(h, v)
     mean_r *= max(1.0 + day_bias + point_bias, 0.5)
+    mean_r *= 1.0 + cfg.sat_scale * max(0.0, 24.0 - sat)
+    mean_r *= 1.0 + cfg.cloud_scale * (cloud / 100.0)
     mean_r = max(mean_r, 0.5)
 
     if rng.random() < cfg.outlier_prob:
@@ -278,6 +282,10 @@ def generate_error(
         r_x = rng.normal(bias_x, sigma_axis)
         r_y = rng.normal(bias_y, sigma_axis)
         r = math.hypot(r_x, r_y)
+        r = max(r, mean_r * 0.40)
+        angle = math.atan2(r_x, r_y)
+        r_x = r * math.sin(angle)
+        r_y = r * math.cos(angle)
     else:
         r_std = max(3.0, mean_r * cfg.r_cv)
         r = rng.normal(mean_r, r_std)
