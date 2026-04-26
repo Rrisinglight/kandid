@@ -1,0 +1,24 @@
+[Voila] Using /tmp to store connection files
+[Voila] Storing connection files in /tmp/voila_upgf5hm_.
+[Voila] Serving static files from /home/r/kandid/.venv/lib/python3.13/site-packages/voila/static.
+[Voila] Voilà is running at:
+http://richagov:8866/
+[Voila] Kernel started: 2933d37c-8e1c-48d0-b599-e43d3371a1a6
+[Voila] Kernel started: f1782baf-cea6-40d4-8cb9-f48a492604d6
+[Voila] Adapting from protocol version 5.3 (kernel f1782baf-cea6-40d4-8cb9-f48a492604d6) to 5.4 (client).
+[Voila] Connecting to kernel f1782baf-cea6-40d4-8cb9-f48a492604d6.
+The websocket_ping_timeout (90000) cannot be longer than the websocket_ping_interval (30000).
+Setting websocket_ping_timeout=30000
+[Voila] Handle signal 15.
+[Voila] Kernel shutdown: 2933d37c-8e1c-48d0-b599-e43d3371a1a6
+[Voila] Kernel shutdown: f1782baf-cea6-40d4-8cb9-f48a492604d6
+[Voila] Using /tmp to store connection files
+[Voila] Storing connection files in /tmp/voila_86el42_r.
+[Voila] Serving static files from /home/r/kandid/.venv/lib/python3.13/site-packages/voila/static.
+[Voila] Voilà is running at:
+http://127.0.0.1:8866/voila/
+[Voila] Kernel started: 81ab3b52-e946-41e0-bdb4-2e9e8a049dbf
+[Voila] Kernel started: 45c0bc51-6d63-4738-9c4c-9e470f459619
+[Voila] Handle signal 15.
+[Voila] Kernel shutdown: 81ab3b52-e946-41e0-bdb4-2e9e8a049dbf
+[Voila] Kernel shutdown: 45c0bc51-6d63-4738-9c4c-9e470f459619
