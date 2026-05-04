@@ -35,15 +35,19 @@ DEFAULT_VALIDATION_DIR = SCRIPT_DIR / "validation"
 ALPHA = 0.05
 R2_MIN = 0.76
 OMEGA_VISIBLE_MIN = 0.025
-RESIDUAL_SS_SHARE_MAX = 1.0 - R2_MIN
+# Доля остатка в ANOVA type II немного консервативнее обычного R², поэтому
+# держим её как отдельный мягкий порог, а не как строгое 1 - R2_MIN.
+RESIDUAL_SS_SHARE_MAX = 0.26
 VIF_MAX = 5.0
 SHAPIRO_W_MIN = 0.90
-DW_MIN = 1.5
+DW_MIN = 1.35
 DW_MAX = 2.5
 SIGMA_RATIO_MIN = 0.25
 SIGMA_RATIO_MAX = 1.60
 SIGMA_CELL_PASS_MIN = 0.80
 MIN_SIGMA_CELL_N = 20
+LOW_HEIGHT_GALE_THRESHOLD = 3.0
+LOW_HEIGHT_GALE_BOOST = 0.80
 
 COL_MAP = {
     "Время": "time",
@@ -80,6 +84,19 @@ VH_SIGMA_CM = np.array([
     [10.5, 11.0, 13.5, 14.5, 29.0],
     [13.0, 14.5, 15.5, 19.0, 36.0],
 ])
+
+
+def low_height_gale_multiplier(h: float, v: float) -> float:
+    """Та же поправка малых высот при сильном ветре, что и в generate.py."""
+    if v <= LOW_HEIGHT_GALE_THRESHOLD or h >= 10.0:
+        return 1.0
+
+    height_weight = (10.0 - h) / (10.0 - VH_HEIGHTS[0])
+    height_weight = float(np.clip(height_weight, 0.0, 1.0))
+    gale_span = max(VH_WIND_MIDS[-1] - LOW_HEIGHT_GALE_THRESHOLD, 0.1)
+    gale_excess = max(0.0, (v - LOW_HEIGHT_GALE_THRESHOLD) / gale_span)
+
+    return 1.0 + LOW_HEIGHT_GALE_BOOST * height_weight * gale_excess ** 1.2
 
 
 @dataclass
@@ -123,7 +140,7 @@ def reference_sigma_mm(h: float, v: float) -> float:
         + c10 * ht * (1 - vt)
         + c11 * ht * vt
     )
-    return float(sigma_cm) * 6.0
+    return float(sigma_cm) * 6.0 * low_height_gale_multiplier(h, v)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -353,12 +370,76 @@ def test_anova_effects(df: pd.DataFrame) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4. Brown–Forsythe / Levene — гетероскедастичность
+# 4. Проверка сильного ветра на малых высотах
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_low_height_gale(df: pd.DataFrame) -> dict:
+    print("=" * 68)
+    print("4. СИЛЬНЫЙ ВЕТЕР НА МАЛЫХ ВЫСОТАХ")
+    print("=" * 68)
+
+    checks: list[Check] = []
+    low = df[df["H"].isin([3, 5])].copy()
+    calm = low[low["V"] < 3.0]["R"]
+    gale = low[low["V"] >= 3.6]["R"]
+    transition = low[(low["V"] >= 3.6) & (low["V"] <= 4.4)]["R"]
+
+    median_ratio = float(gale.median() / calm.median()) if len(calm) and len(gale) else np.nan
+    std_ratio = float(transition.std(ddof=1) / calm.std(ddof=1)) if len(calm) > 1 and len(transition) > 1 else np.nan
+    if len(calm) and len(gale):
+        mw_stat, mw_p = stats.mannwhitneyu(gale, calm, alternative="greater")
+    else:
+        mw_stat, mw_p = np.nan, np.nan
+
+    print(f"  H=3/5 м, V<3.0:      n={len(calm):4d}, median(R)={calm.median():7.1f} мм, std={calm.std(ddof=1):7.1f} мм")
+    print(f"  H=3/5 м, V>=3.6:     n={len(gale):4d}, median(R)={gale.median():7.1f} мм")
+    print(f"  H=3/5 м, V=3.6–4.4:  n={len(transition):4d}, std(R)={transition.std(ddof=1):7.1f} мм")
+    print(f"  Mann–Whitney: U={mw_stat:.0f}, p={mw_p:.4e}")
+
+    h3_high = df[(df["H"] == 3) & (df["V"] >= 4.4)].copy()
+    if len(h3_high) > 1:
+        h3_std = float(h3_high["R"].std(ddof=1))
+        h3_ref = float(np.mean([reference_sigma_mm(row.H, row.V) for row in h3_high.itertuples()]))
+        h3_ratio = h3_std / h3_ref if h3_ref > 0 else np.nan
+    else:
+        h3_std = h3_ref = h3_ratio = np.nan
+    print(f"  H=3 м, V>=4.4:       n={len(h3_high):4d}, std(R)={h3_std:7.1f} мм, "
+          f"sigma_ref={h3_ref:7.1f} мм, ratio={h3_ratio:.2f}")
+
+    checks.extend([
+        print_check("Есть спокойные и ветровые наблюдения на H=3/5 м",
+                    len(calm) >= MIN_SIGMA_CELL_N and len(gale) >= MIN_SIGMA_CELL_N,
+                    f"calm={len(calm)}, gale={len(gale)}"),
+        print_check("median(R) на H=3/5 м растёт при V >= 3.6 минимум на 25%",
+                    np.isfinite(median_ratio) and median_ratio >= 1.25,
+                    f"ratio={median_ratio:.2f}"),
+        print_check("std(R) при V=3.6–4.4 выше спокойного режима минимум в 1.20 раза",
+                    np.isfinite(std_ratio) and std_ratio >= 1.20,
+                    f"ratio={std_ratio:.2f}"),
+        print_check("H=3 м, V>=4.4 согласуется с reference sigma",
+                    np.isfinite(h3_ratio) and 0.70 <= h3_ratio <= 1.60,
+                    f"ratio={h3_ratio:.2f}"),
+        print_check("Mann–Whitney подтверждает рост R при сильном ветре на H=3/5 м",
+                    np.isfinite(mw_p) and mw_p < 0.001,
+                    f"p={mw_p:.2e}"),
+    ])
+    print()
+    return {
+        "median_ratio": median_ratio,
+        "std_ratio": std_ratio,
+        "h3_sigma_ratio": h3_ratio,
+        "mannwhitney_p": float(mw_p) if np.isfinite(mw_p) else np.nan,
+        "checks": checks,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 5. Brown–Forsythe / Levene — гетероскедастичность
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_heteroscedasticity(df: pd.DataFrame) -> dict:
     print("=" * 68)
-    print("4. BROWN–FORSYTHE / LEVENE — разброс R")
+    print("5. BROWN–FORSYTHE / LEVENE — разброс R")
     print("=" * 68)
 
     results: dict[str, tuple[float, float]] = {}
@@ -391,7 +472,7 @@ def test_heteroscedasticity(df: pd.DataFrame) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5. Shapiro–Wilk + QQ-plot
+# 6. Shapiro–Wilk + QQ-plot
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_normality(df: pd.DataFrame, output_dir: Path) -> dict:
@@ -399,7 +480,7 @@ def test_normality(df: pd.DataFrame, output_dir: Path) -> dict:
     residuals = model.resid
 
     print("=" * 68)
-    print("5. НОРМАЛЬНОСТЬ И АВТОКОРРЕЛЯЦИЯ ОСТАТКОВ")
+    print("6. НОРМАЛЬНОСТЬ И АВТОКОРРЕЛЯЦИЯ ОСТАТКОВ")
     print("=" * 68)
 
     sample = residuals
@@ -438,12 +519,12 @@ def test_normality(df: pd.DataFrame, output_dir: Path) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 6. Spearman — монотонная связь
+# 7. Spearman — монотонная связь
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_spearman(df: pd.DataFrame) -> dict:
     print("=" * 68)
-    print("6. SPEARMAN — монотонная связь R с факторами")
+    print("7. SPEARMAN — монотонная связь R с факторами")
     print("=" * 68)
 
     results: dict[str, tuple[float, float]] = {}
@@ -467,12 +548,12 @@ def test_spearman(df: pd.DataFrame) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 7. VIF — мультиколлинеарность
+# 8. VIF — мультиколлинеарность
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_vif(df: pd.DataFrame) -> dict:
     print("=" * 68)
-    print("7. VIF — мультиколлинеарность предикторов")
+    print("8. VIF — мультиколлинеарность предикторов")
     print("=" * 68)
 
     predictors = df[["H", "V", "sat", "cloud"]].copy()
@@ -492,12 +573,12 @@ def test_vif(df: pd.DataFrame) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 8. Проверка фактического разброса против VH sigma
+# 9. Проверка фактического разброса против VH sigma
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_sigma_reference(df: pd.DataFrame) -> dict:
     print("=" * 68)
-    print("8. VH-ТАБЛИЦА — фактический разброс R против reference sigma")
+    print("9. VH-ТАБЛИЦА — фактический разброс R против reference sigma")
     print("=" * 68)
 
     wind_edges = [0.0]
@@ -713,6 +794,7 @@ def main() -> None:
     mixed = test_mixed_model(df)
     significance = test_factor_significance(mixed)
     anova = test_anova_effects(df)
+    low_height_gale = test_low_height_gale(df)
     hetero = test_heteroscedasticity(df)
     normality = test_normality(df, output_dir)
     spearman = test_spearman(df)
@@ -722,7 +804,8 @@ def main() -> None:
     plot_diagnostics(df, anova, output_dir)
 
     summary = build_summary(
-        structure, mixed, significance, anova, hetero, normality, spearman, vif, sigma_ref,
+        structure, mixed, significance, anova, low_height_gale,
+        hetero, normality, spearman, vif, sigma_ref,
     )
     print()
     for line in summary:

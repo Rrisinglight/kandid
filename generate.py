@@ -63,6 +63,8 @@ class Config:
     outlier_prob: float = 0.008
     outlier_scale: float = 1.12
     residual_tightness: float = 0.68
+    low_height_gale_threshold: float = 3.0
+    low_height_gale_boost: float = 0.80
     start_margin_min: int = 40
     end_margin_min: int = 30
 
@@ -100,6 +102,19 @@ def interpolate_sigma(h: float, v: float) -> float:
         + c11 * ht * vt
     )
     return float(sigma_cm) * 6.0  # σ_cm → σ_mm
+
+
+def low_height_gale_multiplier(h: float, v: float, cfg: Config) -> float:
+    """Усиление ошибки для малых высот при ветре выше рабочего диапазона."""
+    if v <= cfg.low_height_gale_threshold or h >= 10.0:
+        return 1.0
+
+    height_weight = (10.0 - h) / (10.0 - VH_HEIGHTS[0])
+    height_weight = float(np.clip(height_weight, 0.0, 1.0))
+    gale_span = max(VH_WIND_MIDS[-1] - cfg.low_height_gale_threshold, 0.1)
+    gale_excess = max(0.0, (v - cfg.low_height_gale_threshold) / gale_span)
+
+    return 1.0 + cfg.low_height_gale_boost * height_weight * gale_excess ** 1.2
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -258,6 +273,10 @@ def generate_error(
 
     # Усиление высотного эффекта поверх VH-таблицы
     sigma *= 1.0 + cfg.height_amplifier * h_norm ** 1.3
+
+    # При очень сильном ветре малые высоты тоже выходят из рабочего режима:
+    # у земли появляются сдвиги и турбулентность, которых нет в обычном VH-коридоре.
+    sigma *= low_height_gale_multiplier(h, v, cfg)
 
     # Плато 15-20 м: повышенная чувствительность к ветру
     if h >= 15.0:
